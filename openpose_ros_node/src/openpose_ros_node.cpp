@@ -286,7 +286,7 @@ op::OpOutputToCvMat opOutputToCvMat;
 op::PoseExtractorCaffe poseExtractorCaffe{poseModel, FLAGS_model_folder, FLAGS_num_gpu_start};
 op::PoseCpuRenderer poseRenderer{poseModel, (float)default_render_threshold, !FLAGS_disable_blending, (float)FLAGS_alpha_pose};
 op::FaceDetector *faceDetector;
-op::FaceExtractorNet *faceExtractor;
+op::FaceExtractor *faceExtractor;
 op::FaceRenderer *faceRenderer;
 // op::OpOutputToCvMat *opOutputToCvMat;
 
