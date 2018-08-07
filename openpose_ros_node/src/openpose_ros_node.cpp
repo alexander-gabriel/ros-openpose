@@ -25,10 +25,19 @@
 #include <vector>
 // Other 3rdpary depencencies
 #include <gflags/gflags.h> // DEFINE_bool, DEFINE_int32, DEFINE_int64, DEFINE_uint64, DEFINE_double, DEFINE_string
+// Allow Google Flags in Ubuntu 14
+#ifndef GFLAGS_GFLAGS_H_
+    namespace gflags = google;
+#endif
 
 // OpenPose dependencies
 // Option a) Importing all modules
 #include <openpose/headers.hpp>
+#include <openpose/core/headers.hpp>
+#include <openpose/filestream/headers.hpp>
+#include <openpose/gui/headers.hpp>
+#include <openpose/pose/headers.hpp>
+#include <openpose/utilities/headers.hpp>
 // Option b) Manually importing the desired modules. Recommended if you only intend to use a few modules.
 // #include <openpose/core/headers.hpp>
 // #include <openpose/experimental/headers.hpp>
@@ -155,6 +164,8 @@ DEFINE_string(write_heatmaps_format,    "png",          "File extension and form
                                                         " Recommended `png` or any compressed and lossless format.");
 
 DEFINE_string(result_image_topic,              "",          "topic name for publish processed/annotated image(usefule for debugging)");
+#define default_render_threshold 0.05
+#define default_scale_number 1
 
 op::PoseModel gflagToPoseModel(const std::string& poseModeString)
 {
@@ -264,18 +275,20 @@ op::Point<int> netInputSize;
 op::Point<int> netOutputSize;
 op::Point<int> faceNetInputSize;
 op::Point<int> handNetInputSize;
+// const op::PoseModel poseModel  = op::flagsToPoseModel(FLAGS_model_pose);
 op::PoseModel poseModel;
 op::ScaleMode keypointScale;
 std::vector<op::HeatMapType> heatMapTypes;
 
-op::CvMatToOpInput *cvMatToOpInput;
-op::CvMatToOpOutput *cvMatToOpOutput;
-op::PoseExtractorCaffe *poseExtractorCaffe;
-op::PoseRenderer *poseRenderer;
+op::CvMatToOpInput cvMatToOpInput{poseModel};
+op::CvMatToOpOutput cvMatToOpOutput;
+op::OpOutputToCvMat opOutputToCvMat;
+op::PoseExtractorCaffe poseExtractorCaffe{poseModel, FLAGS_model_folder, FLAGS_num_gpu_start};
+op::PoseCpuRenderer poseRenderer{poseModel, (float)default_render_threshold, !FLAGS_disable_blending, (float)FLAGS_alpha_pose};
 op::FaceDetector *faceDetector;
-op::FaceExtractor *faceExtractor;
+op::FaceExtractorNet *faceExtractor;
 op::FaceRenderer *faceRenderer;
-op::OpOutputToCvMat *opOutputToCvMat;
+// op::OpOutputToCvMat *opOutputToCvMat;
 
 int init_openpose()
 {
@@ -292,19 +305,27 @@ int init_openpose()
     netOutputSize = netInputSize;
 
     // Initialize
-    cvMatToOpInput = new op::CvMatToOpInput(netInputSize, FLAGS_num_scales, (float)FLAGS_scale_gap);
-    cvMatToOpOutput = new op::CvMatToOpOutput(outputSize);
-    poseExtractorCaffe = new op::PoseExtractorCaffe(netInputSize, netOutputSize, outputSize, FLAGS_num_scales, poseModel, FLAGS_model_folder, FLAGS_num_gpu_start);
-    poseRenderer = new op::PoseRenderer(netOutputSize, outputSize, poseModel, nullptr, !FLAGS_disable_blending, (float)FLAGS_alpha_pose);
-    faceDetector = new op::FaceDetector(poseModel);
-    faceExtractor = new op::FaceExtractor(faceNetInputSize, faceNetInputSize, FLAGS_model_folder, FLAGS_num_gpu_start);
-    faceRenderer = new op::FaceRenderer(netOutputSize, (float)FLAGS_alpha_pose, (float) 0.7);
-    opOutputToCvMat = new op::OpOutputToCvMat(outputSize);
 
-    poseExtractorCaffe->initializationOnThread();
-    poseRenderer->initializationOnThread();
-    faceExtractor->initializationOnThread();
-    faceRenderer->initializationOnThread();
+    // const auto poseModel
+
+
+
+
+    op::FrameDisplayer frameDisplayer{"OpenPose Tutorial - Example 1", outputSize};
+    // cvMatToOpInput = new op::CvMatToOpInput(netInputSize, FLAGS_num_scales, (float)FLAGS_scale_gap);
+    // cvMatToOpInput = new op::CvMatToOpInput(poseModel);
+    // cvMatToOpOutput = cvMatToOpOutput.createArray(inputImage, scaleInputToOutput, outputSize);
+    // poseExtractorCaffe = new op::PoseExtractorCaffe(netInputSize, netOutputSize, outputSize, FLAGS_num_scales, poseModel, FLAGS_model_folder, FLAGS_num_gpu_start);
+    // poseRenderer = new op::PoseRenderer(netOutputSize, outputSize, poseModel, nullptr, !FLAGS_disable_blending, (float)FLAGS_alpha_pose);
+    // faceDetector = new op::FaceDetector(poseModel);
+    // faceExtractor = new op::FaceExtractorNet(faceNetInputSize, faceNetInputSize, FLAGS_model_folder, FLAGS_num_gpu_start);
+    // faceRenderer = new op::FaceRenderer(netOutputSize, (float)FLAGS_alpha_pose, (float) 0.7);
+    // opOutputToCvMat = new op::OpOutputToCvMat(outputSize);
+
+    // poseExtractorCaffe->initializationOnThread();
+    // poseRenderer->initializationOnThread();
+    // faceExtractor->initializationOnThread();
+    // faceRenderer->initializationOnThread();
 
     // Measuring total time
     const auto now = std::chrono::high_resolution_clock::now();
@@ -326,27 +347,37 @@ void imageCallback(const sensor_msgs::ImageConstPtr& msg) {
     }
     if (cv_ptr->image.empty()) return;
 
-    op::Array<float> netInputArray;
-    std::vector<float> scaleRatios;
-    op::Array<float> outputArray;
+    // op::Array<float> netInputArray;
+    // op::Array<float> outputArray;
 
-    // process
-    std::tie(netInputArray, scaleRatios) = cvMatToOpInput->format(cv_ptr->image);
+    const op::Point<int> imageSize{cv_ptr->image.cols, cv_ptr->image.rows};
+    // Step 2 - Get desired scale sizes
+    std::vector<double> scaleInputToNetInputs;
+    std::vector<op::Point<int>> netInputSizes;
     double scaleInputToOutput;
-    std::tie(scaleInputToOutput, outputArray) = cvMatToOpOutput->format(cv_ptr->image);
+    op::Point<int> outputResolution;
+    int FLAGS_scale_number = default_scale_number;
+    // const auto netInputSize = op::flagsToPoint(FLAGS_net_resolution, "-1x368");
+    op::ScaleAndSizeExtractor scaleAndSizeExtractor(netInputSize, outputSize, FLAGS_scale_number, FLAGS_scale_gap);
+    std::tie(scaleInputToNetInputs, netInputSizes, scaleInputToOutput, outputResolution)
+        = scaleAndSizeExtractor.extract(imageSize);
     // Step 3 - Estimate poseKeypoints
-    poseExtractorCaffe->forwardPass(netInputArray, {cv_ptr->image.cols, cv_ptr->image.rows}, scaleRatios);
-    const auto poseKeypoints = poseExtractorCaffe->getPoseKeypoints();
-    const auto faces = faceDetector->detectFaces(poseKeypoints, scaleInputToOutput);
-    faceExtractor->forwardPass(faces, cv_ptr->image, scaleInputToOutput);
-    const auto faceKeypoints = faceExtractor->getFaceKeypoints();
+    const auto netInputArray = cvMatToOpInput.createArray(cv_ptr->image, scaleInputToNetInputs, netInputSizes);
+    auto outputArray = cvMatToOpOutput.createArray(cv_ptr->image, scaleInputToOutput, outputResolution);
+    // const auto faces = faceDetector->detectFaces(poseKeypoints, scaleInputToOutput);
+    // Step 4 - Estimate poseKeypoints
+    poseExtractorCaffe.forwardPass(netInputArray, imageSize, scaleInputToNetInputs);
+    const auto poseKeypoints = poseExtractorCaffe.getPoseKeypoints();
+    // Step 4b - Estimate Faces
+    // faceExtractor->forwardPass(faces, cv_ptr->image, scaleInputToOutput);
+    // const auto faceKeypoints = faceExtractor->getFaceKeypoints();
 
     // publish annotations.
     openpose_ros_msgs::Persons persons;
     persons.rostime = t;
     persons.image_w = outputSize.x;
     persons.image_h = outputSize.y;
-    
+
     const int num_people = poseKeypoints.getSize(0);
     const int num_bodyparts = poseKeypoints.getSize(1);
 
@@ -367,10 +398,10 @@ void imageCallback(const sensor_msgs::ImageConstPtr& msg) {
 
     // publish result image with annotation.
     if (!FLAGS_result_image_topic.empty()) {
-        poseRenderer->renderPose(outputArray, poseKeypoints);
-        faceRenderer->renderFace(outputArray, faceKeypoints);
+        poseRenderer.renderPose(outputArray, poseKeypoints, scaleInputToOutput);
+        // faceRenderer->renderFace(outputArray, faceKeypoints);
 
-        auto outputImage = opOutputToCvMat->formatToCvMat(outputArray);
+        auto outputImage = opOutputToCvMat.formatToCvMat(outputArray);
 
         sensor_msgs::ImagePtr msg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", outputImage).toImageMsg();
         publish_result.publish(msg);
@@ -387,7 +418,7 @@ int main(int argc, char *argv[])
     FLAGS_num_gpu_start = getParam(local_nh, "num_gpu_start", 1);
     FLAGS_model_pose = getParam(local_nh, "model_pose", std::string("COCO"));
     FLAGS_net_resolution = getParam(local_nh, "net_resolution", std::string("640x480"));
-    FLAGS_face = getParam(local_nh, "face", false);
+    // FLAGS_face = getParam(local_nh, "face", false);
     FLAGS_no_display = getParam(local_nh, "no_display", false);
 
     std::string camera_src = getParam(local_nh, "camera", std::string("/camera/image"));
@@ -395,7 +426,7 @@ int main(int argc, char *argv[])
 
     // prepare model
     init_openpose();
-  
+
     // subscribe image
     ros::NodeHandle nh;
     image_transport::ImageTransport img_t(nh);
@@ -406,5 +437,5 @@ int main(int argc, char *argv[])
     publish_pose = nh.advertise<openpose_ros_msgs::Persons>("/openpose/pose", 1);
 
     ros::spin();
-    return 0; 
+    return 0;
 }
